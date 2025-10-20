@@ -1,0 +1,164 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local event = ReplicatedStorage:WaitForChild("RagdollAndFlyToBase")
+
+local UserInputService = game:GetService("UserInputService")
+local targetBasePosition = Vector3.new(0, 10, 0) -- замени на позицию базы в твоей игре
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    if input.KeyCode == Enum.KeyCode.E then
+        event:FireServer(targetBasePosition)
+    end
+end)-- Server-side script: помести в ServerScriptService
+-- Требует RemoteEvent "RagdollAndFlyToBase" в ReplicatedStorage
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+
+local event = ReplicatedStorage:FindFirstChild("RagdollAndFlyToBase")
+if not event then
+    event = Instance.new("RemoteEvent")
+    event.Name = "RagdollAndFlyToBase"
+    event.Parent = ReplicatedStorage
+end
+
+-- Вспомогательные функции
+local function gatherMotor6Ds(character)
+    -- Собирает Motor6D и их параметры для восстановления
+    local saved = {}
+    for _, m in ipairs(character:GetDescendants()) do
+        if m:IsA("Motor6D") then
+            table.insert(saved, {
+                Name = m.Name,
+                ParentName = m.Parent and m.Parent.Name or nil,
+                Part0 = m.Part0,
+                Part1 = m.Part1,
+                C0 = m.C0,
+                C1 = m.C1,
+                Current = m, -- для удаления позже
+            })
+        end
+    end
+    return saved
+end
+
+local function makeRagdoll(character)
+    -- Заменяем Motor6D на Attachments + BallSocketConstraint для ragdoll
+    local saved = gatherMotor6Ds(character)
+    local created = {} -- храним, чтобы потом удалить
+    for _, info in ipairs(saved) do
+        local m = info.Current
+        if m and m.Parent and m.Part0 and m.Part1 then
+            -- создаём Attachments (на Part0 и Part1)
+            local a0 = Instance.new("Attachment")
+            a0.Name = info.Name .. "_A0"
+            a0.CFrame = info.C0
+            a0.Parent = m.Part0
+
+            local a1 = Instance.new("Attachment")
+            a1.Name = info.Name .. "_A1"
+            a1.CFrame = info.C1
+            a1.Parent = m.Part1
+
+            local bsc = Instance.new("BallSocketConstraint")
+            bsc.Name = info.Name .. "_BSC"
+            bsc.Attachment0 = a0
+            bsc.Attachment1 = a1
+            bsc.LimitsEnabled = false -- можно включить и настроить ограничения
+            bsc.Parent = character -- оставляем в модели
+
+            table.insert(created, {attachment0 = a0, attachment1 = a1, constraint = bsc})
+            -- удаляем Motor6D
+            m:Destroy()
+        end
+    end
+
+    -- Отключим анимацию и управление
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if humanoid then
+        -- PlatformStand предотвращает стандартное управление; поведение похожее на ragdoll
+        humanoid.PlatformStand = true
+    end
+
+    return created
+end
+
+local function restoreFromRagdoll(character, created)
+    -- Восстанавливаем Motor6D не идеально (восстанавливаем стандартные соединения заменой)
+    -- Простая реализация: удаляем BallSocket и Attachments и сбрасываем PlatformStand
+    for _, c in ipairs(created or {}) do
+        if c.constraint and c.constraint.Parent then
+            c.constraint:Destroy()
+        end
+        if c.attachment0 and c.attachment0.Parent then
+            c.attachment0:Destroy()
+        end
+        if c.attachment1 and c.attachment1.Parent then
+            c.attachment1:Destroy()
+        end
+    end
+
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if humanoid then
+        humanoid.PlatformStand = false
+        -- Перезапуск анимаций: ресеть аниматор
+        local animator = humanoid:FindFirstChildOfClass("Animator")
+        if animator then
+            animator:Destroy()
+            -- Создадим новый Animator (Roblox создаёт его автоматически при необходимости)
+            Instance.new("Animator", humanoid)
+        end
+    end
+
+    -- Примечание: если ты хочешь полное восстановление точных Motor6D с исходными C0/C1,
+    -- нужно заранее сохранить их параметры и воссоздать Motor6D вручную.
+end
+
+local function flyCharacterToPosition(character, targetPos, speed, stopDistance, timeout)
+    -- Возвращает по завершении (блокирующая по времени функция на сервере)
+    local hrp = character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    local bv = Instance.new("BodyVelocity")
+    bv.MaxForce = Vector3.new(1e5, 1e5, 1e5) -- достаточно большая сила
+    bv.Velocity = Vector3.new(0,0,0)
+    bv.P = 1e4
+    bv.Parent = hrp
+
+    local start = tick()
+    speed = speed or 200 -- studs/с
+    stopDistance = stopDistance or 5
+    timeout = timeout or 10
+
+    while hrp and hrp.Parent and tick() - start < timeout do
+        local dir = (targetPos - hrp.Position)
+        local dist = dir.Magnitude
+        if dist <= stopDistance then break end
+        local vel = dir.Unit * speed
+        bv.Velocity = vel
+        wait(0.03)
+    end
+
+    if bv and bv.Parent then bv:Destroy() end
+end
+
+event.OnServerEvent:Connect(function(player, targetPosition)
+    
+    if typeof(targetPosition) ~= "Vector3" then return end
+
+    local character = player.Character
+    if not character then return end
+
+    
+
+    
+    local created = makeRagdoll(character)
+
+    
+    local speed = 300 -- подбери скорость: studs / sec (очень быстро)
+    local stopDistance = 6
+    local timeout = 8
+    flyCharacterToPosition(character, targetPosition, speed, stopDistance, timeout)
+
+    -- 3) через небольшую задержку восстановим обычное состояние
+    wait(0.25)
+    restoreFromRagdoll(character, created)
+end)
